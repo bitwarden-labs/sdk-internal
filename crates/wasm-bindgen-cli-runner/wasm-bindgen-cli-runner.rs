@@ -1,4 +1,5 @@
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    env_logger::init();
     let args: Vec<_> = std::env::args().skip(1).collect();
 
     let [target, out_dir, input] = args
