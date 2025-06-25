@@ -9,6 +9,8 @@ on:
       - "hotfix-rc"
   workflow_dispatch:
 
+permissions: {}
+
 defaults:
   run:
     shell: bash
