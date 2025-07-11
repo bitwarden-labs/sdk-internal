@@ -1,4 +1,3 @@
-use bitwarden_error::bitwarden_error;
 use thiserror::Error;
 
 #[derive(Debug, Error)]

@@ -1,4 +1,3 @@
-use core::error;
 use std::sync::Arc;
 
 use bitwarden_error::bitwarden_error;

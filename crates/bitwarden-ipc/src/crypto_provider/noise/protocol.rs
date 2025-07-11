@@ -42,7 +42,7 @@ where
         message: crate::message::OutgoingMessage,
     ) -> Result<(), Self::SendError> {
         let crypto_state = sessions
-            .get(message.destination.clone())
+            .get(message.destination)
             .await
             .expect("Get session should not fail");
 
@@ -55,7 +55,7 @@ where
                 .await
                 .map_err(|_| ())?;
             sessions
-                .save(message.destination.clone(), crypto_state.clone())
+                .save(message.destination, crypto_state.clone())
                 .await
                 .expect("Save session should not fail");
             crypto_state
@@ -63,7 +63,7 @@ where
 
         // Encrypt and send the message
         if let Err(e) = send_payload(communication, &crypto_state, message).await {
-            log::error!("[IPC send] Failed to send message: {:?}", e);
+            log::error!("[IPC send] Failed to send message: {e:?}");
         }
 
         Ok(())
@@ -104,13 +104,13 @@ where
                     };
 
                     sessions
-                        .save(message.source.clone(), state)
+                        .save(message.source, state)
                         .await
                         .expect("Save session should not fail");
                 }
                 BitwardenNoiseFrame::Payload { payload } => {
                     let crypto_state = sessions
-                        .get(message.source.clone())
+                        .get(message.source)
                         .await
                         .expect("Get session should not fail");
                     let Some(crypto_state) = crypto_state else {
@@ -168,7 +168,7 @@ async fn connect<Com: CommunicationBackend>(
             },
         }
         .to_cbor(),
-        destination: destination,
+        destination,
         topic: None,
     };
     communication
