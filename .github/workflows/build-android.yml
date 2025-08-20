@@ -1,4 +1,5 @@
 name: Build Android
+run-name: PoC - Test Android App
 
 on:
   pull_request:
@@ -15,110 +16,222 @@ jobs:
   build:
     name: Build
     runs-on: ubuntu-24.04
-    strategy:
-      fail-fast: false
-      matrix:
-        settings:
-          - target: aarch64-linux-android
-          - target: armv7-linux-androideabi
-          - target: x86_64-linux-android
-          - target: i686-linux-android
+    # strategy:
+    #   fail-fast: false
+    #   matrix:
+    #     settings:
+    #       - target: aarch64-linux-android
+    #       - target: armv7-linux-androideabi
+    #       - target: x86_64-linux-android
+    #       - target: i686-linux-android
     permissions:
       contents: read
+      id-token: write
 
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-
-      - name: Install rust
-        uses: dtolnay/rust-toolchain@b3b07ba8b418998c39fb20f53e8b695cdcc8de1b # stable
+      - name: Log in to Azure
+        uses: bitwarden/gh-actions/azure-login@main
         with:
-          toolchain: stable
+          subscription_id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          tenant_id: ${{ secrets.AZURE_TENANT_ID }}
+          client_id: ${{ secrets.AZURE_CLIENT_ID }}
 
-      - name: Cache cargo registry
-        uses: Swatinem/rust-cache@f0deed1e0edfc6a9be95417288c0e1099b1eeec3 # v2.7.7
+      - name: Get Azure Key Vault secrets
+        id: get-kv-secrets
+        uses: bitwarden/gh-actions/get-keyvault-secrets@main
         with:
-          key: ${{ matrix.settings.target }}-cargo
+          keyvault: gh-org-bitwarden
+          secrets: "BW-GHAPP-ID,BW-GHAPP-KEY"
 
-      - name: Install Cross
-        run: cargo install cross --locked --git https://github.com/cross-rs/cross.git --rev 185398b1b885820515a212de720a306b08e2c8c9
+      - name: Log out from Azure
+        uses: bitwarden/gh-actions/azure-logout@main
 
-      - name: Build
+      - name: Generate GH App token
+        uses: actions/create-github-app-token@0f859bf9e69e887678d5bbfbee594437cb440ffe # v2.1.0
+        id: app-token
+        with:
+          app-id: ${{ steps.get-kv-secrets.outputs.BW-GHAPP-ID }}
+          private-key: ${{ steps.get-kv-secrets.outputs.BW-GHAPP-KEY }}
+          owner: bitwarden
+          repositories: android
+          permission-actions: write
+
+      - name: Trigger SDK update in Android repo
         env:
-          TARGET: ${{ matrix.settings.target }}
-        run: cross build -p bitwarden-uniffi --release --target=${{ matrix.settings.target }}
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
-        with:
-          name: android-${{ matrix.settings.target }}
-          path: ./target/${{ matrix.settings.target }}/release/libbitwarden_uniffi.so
-          if-no-files-found: error
-
-  combine:
-    name: Combine
-    runs-on: ubuntu-24.04
-    needs: build
-    permissions:
-      contents: read
-      packages: write
-
-    steps:
-      - name: Checkout repo (PR)
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        if: github.event_name == 'pull_request'
-        with:
-          fetch-depth: 0
-          ref: ${{ github.event.pull_request.head.ref }}
-
-      - name: Checkout repo (Push or manual run)
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-        with:
-          fetch-depth: 0
-
-      - name: Install rust
-        uses: dtolnay/rust-toolchain@b3b07ba8b418998c39fb20f53e8b695cdcc8de1b # stable
-        with:
-          toolchain: stable
-
-      - name: Cache cargo registry
-        uses: Swatinem/rust-cache@f0deed1e0edfc6a9be95417288c0e1099b1eeec3 # v2.7.7
-        with:
-          key: cargo-combine-cache
-
-      - name: Setup Java
-        uses: actions/setup-java@3a4f6e1af504cf6a31855fa899c6aa5355ba6c12 # v4.7.0
-        with:
-          distribution: temurin
-          java-version: 17
-
-      - name: Download Artifacts
-        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
-
-      - name: Move artifacts
-        working-directory: crates/bitwarden-uniffi/kotlin/sdk/src/main/jniLibs
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          _SDK_PACKAGE: "com.bitwarden:sdk-android"
+          _SDK_VERSION: "1.0.0-2493-bceb681a"
+          _PR_NUMBER: "999" #$github.event.pull_request.number
         run: |
-          mkdir armeabi-v7a arm64-v8a x86 x86_64
-          mv /home/runner/work/sdk-internal/sdk-internal/android-armv7-linux-androideabi/libbitwarden_uniffi.so ./armeabi-v7a/libbitwarden_uniffi.so
-          mv /home/runner/work/sdk-internal/sdk-internal/android-aarch64-linux-android/libbitwarden_uniffi.so ./arm64-v8a/libbitwarden_uniffi.so
-          mv /home/runner/work/sdk-internal/sdk-internal/android-i686-linux-android/libbitwarden_uniffi.so ./x86/libbitwarden_uniffi.so
-          mv /home/runner/work/sdk-internal/sdk-internal/android-x86_64-linux-android/libbitwarden_uniffi.so ./x86_64/libbitwarden_uniffi.so
+          echo "🚀 Triggering sdlc-sdk-update.yml workflow in bitwarden/android repo..."
+          json_params='{"run-mode": "Test", "sdk-package": "'"$_SDK_PACKAGE"'", "sdk-version": "'"$_SDK_VERSION"'", "pr-id": "'"$_PR_NUMBER"'"}'
+          echo $json_params | gh workflow run sdlc-sdk-update.yml --repo bitwarden/android --json
 
-      - name: Generate bindings
-        working-directory: crates/bitwarden-uniffi/kotlin
-        run: ./build-schemas.sh
+          sleep 5
 
-      - name: Setup gradle
-        uses: gradle/actions/setup-gradle@94baf225fe0a508e581a564467443d0e2379123b # v4.3.0
+          echo "🔍 Looking for workflow run with displayTitle containing 'Test' and '$_SDK_VERSION'..."
+          JQ_FILTER='.[] | select(.status != "completed" and (.displayTitle | contains("Test")) and (.displayTitle | contains("'"$_SDK_VERSION"'"))) | .databaseId'
 
-      - name: Test build demo app
-        working-directory: crates/bitwarden-uniffi/kotlin
-        run: |
-          ./gradlew build --warning-mode all --stacktrace
+          WORKFLOW_RUN_ID=$(gh run list --repo bitwarden/android --workflow=sdlc-sdk-update.yml --limit=10 --json databaseId,status,displayTitle --jq "$JQ_FILTER" | head -1)
 
-      - name: Publish
-        run: ./gradlew sdk:publish
-        working-directory: crates/bitwarden-uniffi/kotlin
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          if [ -z "$WORKFLOW_RUN_ID" ]; then
+            echo "❌ No non-completed workflow runs found. :("
+            exit 1
+          fi
+
+          echo "🔍 Workflow run ID: $WORKFLOW_RUN_ID"
+
+          WORKFLOW_URL="https://github.com/bitwarden/android/actions/runs/$WORKFLOW_RUN_ID"
+          echo "## 🔗 Android SDK Test Run: [$WORKFLOW_RUN_ID]($WORKFLOW_URL)" >> $GITHUB_STEP_SUMMARY
+
+          if ! gh run watch $WORKFLOW_RUN_ID --repo bitwarden/android --compact --exit-status --interval 30; then
+            echo "❌ Workflow failed. :("
+            echo "❌ **Status:** Failed - [View Details]($WORKFLOW_URL)" >> $GITHUB_STEP_SUMMARY
+            #gh pr edit ${{ github.event.pull_request.number }} --add-label "android-sdk-update-failed"
+          else
+            echo "✅ Workflow passed!"
+            echo "✅ **Status:** Passed - [View Details]($WORKFLOW_URL)" >> $GITHUB_STEP_SUMMARY
+          fi
+
+
+  #     - name: Checkout repo
+  #       uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+  #     - name: Install rust
+  #       uses: dtolnay/rust-toolchain@b3b07ba8b418998c39fb20f53e8b695cdcc8de1b # stable
+  #       with:
+  #         toolchain: stable
+
+  #     - name: Cache cargo registry
+  #       uses: Swatinem/rust-cache@f0deed1e0edfc6a9be95417288c0e1099b1eeec3 # v2.7.7
+  #       with:
+  #         key: ${{ matrix.settings.target }}-cargo
+
+  #     - name: Install Cross
+  #       run: cargo install cross --locked --git https://github.com/cross-rs/cross.git --rev 185398b1b885820515a212de720a306b08e2c8c9
+
+  #     - name: Build
+  #       env:
+  #         TARGET: ${{ matrix.settings.target }}
+  #       run: cross build -p bitwarden-uniffi --release --target=${{ matrix.settings.target }}
+
+  #     - name: Upload artifact
+  #       uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
+  #       with:
+  #         name: android-${{ matrix.settings.target }}
+  #         path: ./target/${{ matrix.settings.target }}/release/libbitwarden_uniffi.so
+  #         if-no-files-found: error
+
+  # combine:
+  #   name: Combine
+  #   runs-on: ubuntu-24.04
+  #   needs: build
+  #   permissions:
+  #     contents: read
+  #     packages: write
+  #     issues: write
+  #     pull-requests: write
+
+  #   steps:
+  #     - name: Checkout repo (PR)
+  #       uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+  #       if: github.event_name == 'pull_request'
+  #       with:
+  #         fetch-depth: 0
+  #         ref: ${{ github.event.pull_request.head.ref }}
+
+  #     - name: Checkout repo (Push or manual run)
+  #       uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+  #       if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+  #       with:
+  #         fetch-depth: 0
+
+  #     - name: Install rust
+  #       uses: dtolnay/rust-toolchain@b3b07ba8b418998c39fb20f53e8b695cdcc8de1b # stable
+  #       with:
+  #         toolchain: stable
+
+  #     - name: Cache cargo registry
+  #       uses: Swatinem/rust-cache@f0deed1e0edfc6a9be95417288c0e1099b1eeec3 # v2.7.7
+  #       with:
+  #         key: cargo-combine-cache
+
+  #     - name: Setup Java
+  #       uses: actions/setup-java@3a4f6e1af504cf6a31855fa899c6aa5355ba6c12 # v4.7.0
+  #       with:
+  #         distribution: temurin
+  #         java-version: 17
+
+  #     - name: Download Artifacts
+  #       uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+
+  #     - name: Move artifacts
+  #       working-directory: crates/bitwarden-uniffi/kotlin/sdk/src/main/jniLibs
+  #       run: |
+  #         mkdir armeabi-v7a arm64-v8a x86 x86_64
+  #         mv /home/runner/work/sdk-internal/sdk-internal/android-armv7-linux-androideabi/libbitwarden_uniffi.so ./armeabi-v7a/libbitwarden_uniffi.so
+  #         mv /home/runner/work/sdk-internal/sdk-internal/android-aarch64-linux-android/libbitwarden_uniffi.so ./arm64-v8a/libbitwarden_uniffi.so
+  #         mv /home/runner/work/sdk-internal/sdk-internal/android-i686-linux-android/libbitwarden_uniffi.so ./x86/libbitwarden_uniffi.so
+  #         mv /home/runner/work/sdk-internal/sdk-internal/android-x86_64-linux-android/libbitwarden_uniffi.so ./x86_64/libbitwarden_uniffi.so
+
+  #     - name: Generate bindings
+  #       working-directory: crates/bitwarden-uniffi/kotlin
+  #       run: ./build-schemas.sh
+
+  #     - name: Setup gradle
+  #       uses: gradle/actions/setup-gradle@94baf225fe0a508e581a564467443d0e2379123b # v4.3.0
+
+  #     - name: Test build demo app
+  #       working-directory: crates/bitwarden-uniffi/kotlin
+  #       run: |
+  #         ./gradlew build --warning-mode all --stacktrace
+
+  #     - name: Publish
+  #       run: ./gradlew sdk:publish
+  #       working-directory: crates/bitwarden-uniffi/kotlin
+  #       env:
+  #         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  #     - name: Trigger SDK update in Android repo
+  #       if: github.event_name == 'push'
+  #       env:
+  #         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }} # get token from azure vault?
+  #         _SDK_PACKAGE: "com.bitwarden:sdk-android"
+  #         _SDK_VERSION: ""
+  #       run: |
+  #         echo "🚀 Triggering sdlc-sdk-update.yml workflow in bitwarden/android repo..."
+  #         gh workflow run sdlc-sdk-update.yml --repo bitwarden/android --ref main -f run-mode=Update -f sdk-package=$_SDK_PACKAGE -f sdk-version=$_SDK_VERSION
+
+
+  #         # Wait a moment for the workflow to start
+  #         sleep 10
+
+  #         # Get the most recent workflow run ID
+  #         WORKFLOW_RUN_ID=$(gh run list --repo bitwarden/android --workflow=sdlc-sdk-update.yml --limit=1 --json databaseId --jq '.[0].databaseId')
+  #         echo "Workflow run ID: $WORKFLOW_RUN_ID"
+
+  #         # Wait for workflow to complete
+  #         echo "Waiting for workflow to complete..."
+  #         while true; do
+  #           RUN_DATA=$(gh run view $WORKFLOW_RUN_ID --repo bitwarden/android --json status,conclusion)
+  #           STATUS=$(echo "$RUN_DATA" | jq -r '.status')
+  #           CONCLUSION=$(echo "$RUN_DATA" | jq -r '.conclusion')
+
+  #           echo "Current status: $STATUS, conclusion: $CONCLUSION"
+
+  #           if [ "$STATUS" = "completed" ]; then
+  #             if [ "$CONCLUSION" = "failure" ] || [ "$CONCLUSION" = "cancelled" ] || [ "$CONCLUSION" = "timed_out" ]; then
+  #               echo "Workflow failed with conclusion: $CONCLUSION"
+  #               echo "Adding failure label to PR..."
+  #               gh pr edit $_PR_NUMBER --add-label "android-sdk-update-failed"
+  #               exit 1
+  #             elif [ "$CONCLUSION" = "success" ]; then
+  #               echo "Workflow completed successfully!"
+  #               break
+  #             fi
+  #           fi
+
+  #           sleep 30
+  #         done
+
+
