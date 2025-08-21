@@ -75,7 +75,7 @@ jobs:
           WORKFLOW_RUN_ID=$(gh run list --repo bitwarden/android --workflow=sdlc-sdk-update.yml --limit=10 --json databaseId,status,displayTitle --jq "$JQ_FILTER" | head -1)
 
           if [ -z "$WORKFLOW_RUN_ID" ]; then
-            echo "❌ No non-completed workflow runs found. :("
+            echo "::error::No workflow found after $_MAX_RUN_LIST_RETRIES attempts."
             exit 1
           fi
 
@@ -85,11 +85,11 @@ jobs:
           echo "## 🔗 Android SDK Test Run: [$WORKFLOW_RUN_ID]($WORKFLOW_URL)" >> $GITHUB_STEP_SUMMARY
 
           if ! gh run watch $WORKFLOW_RUN_ID --repo bitwarden/android --compact --exit-status --interval 30; then
-            echo "❌ Workflow failed. :("
+            echo "❌ Android SDK Test failed."
             echo "❌ **Status:** Failed - [View Details]($WORKFLOW_URL)" >> $GITHUB_STEP_SUMMARY
             #gh pr edit ${{ github.event.pull_request.number }} --add-label "android-sdk-update-failed"
           else
-            echo "✅ Workflow passed!"
+            echo "✅ Android SDK Test passed."
             echo "✅ **Status:** Passed - [View Details]($WORKFLOW_URL)" >> $GITHUB_STEP_SUMMARY
           fi
 
